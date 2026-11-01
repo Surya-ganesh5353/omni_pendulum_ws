@@ -1,191 +1,59 @@
 <?xml version="1.0"?>
-<!--
-  AgileX LIMO in mecanum (omnidirectional) mode carrying a 2-DOF inverted pendulum.
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="omni_pendulum">
 
-  Chassis/wheel dimensions and meshes come from AgileX's limo_description package
-  (https://github.com/agilexrobotics/limo_ros2). That package only ships diff-drive and
-  Ackermann Gazebo Classic models, so the mecanum behaviour is added here for Gazebo
-  Harmonic with anisotropic wheel friction + the gz MecanumDrive system.
--->
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" xmlns:gz="http://gazebosim.org/schema" name="omni_pendulum">
+  <xacro:property name="wheel_xoff" value="0.15"/>
+  <xacro:property name="wheel_yoff" value="0.18"/>
 
-  <xacro:property name="M_PI" value="3.14159265"/>
-  <xacro:property name="mesh_dir" value="file://$(find omni_pendulum_sim)/meshes/limo"/>
-
-  <!-- LIMO geometry (from limo_four_diff.xacro) -->
-  <xacro:property name="base_x_size" value="0.13"/>
-  <xacro:property name="base_y_size" value="0.12"/>
-  <xacro:property name="base_z_size" value="0.1"/>
-  <xacro:property name="base_mass" value="2.1557"/>
-  <xacro:property name="base_height" value="0.15"/>
-  <xacro:property name="wheelbase" value="0.2"/>
-  <xacro:property name="track" value="0.13"/>
-  <xacro:property name="wheel_vertical_offset" value="-0.10"/>
-  <xacro:property name="wheel_length" value="0.045"/>
-  <xacro:property name="wheel_radius" value="0.045"/>
-  <xacro:property name="wheel_mass" value="0.5"/>
-  <!-- Height of the LIMO's top surface at the centre of the body, measured from the mesh -->
-  <xacro:property name="body_top_height" value="0.1455"/>
-
-  <!-- Flat platform on four posts, clearing the LIMO's sloped top cover (peak 0.2535 m) -->
-  <xacro:property name="platform_top_height" value="0.266"/>
-  <xacro:property name="platform_x_size" value="0.26"/>
-  <xacro:property name="platform_y_size" value="0.17"/>
-  <xacro:property name="platform_thickness" value="0.008"/>
-  <xacro:property name="platform_mass" value="0.2"/>
-  <xacro:property name="post_x" value="0.10"/>
-  <xacro:property name="post_y" value="0.065"/>
-  <xacro:property name="post_radius" value="0.006"/>
-  <xacro:property name="post_bottom_height" value="0.12"/>
-
-  <!-- Pendulum: thin rod with a ball on top -->
-  <xacro:property name="mount_thickness" value="0.012"/>
-  <xacro:property name="rod_length" value="0.5"/>
-  <xacro:property name="rod_radius" value="0.008"/>
-  <xacro:property name="rod_mass" value="0.1"/>
-  <xacro:property name="bob_radius" value="0.025"/>
-  <xacro:property name="bob_mass" value="0.1"/>
-
-  <link name="base_footprint"/>
-
-  <joint name="base_joint" type="fixed">
-    <parent link="base_footprint"/>
-    <child link="base_link"/>
-    <origin xyz="0 0 ${base_height}" rpy="0 0 0"/>
-  </joint>
-
+  <!-- Base Chassis Link -->
   <link name="base_link">
     <inertial>
-      <mass value="${base_mass}"/>
-      <inertia ixx="${base_mass * (base_y_size**2 + base_z_size**2) / 12}" ixy="0" ixz="0"
-               iyy="${base_mass * (base_x_size**2 + base_z_size**2) / 12}" iyz="0"
-               izz="${base_mass * (base_x_size**2 + base_y_size**2) / 12}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="4.0"/>
+      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.08"/>
     </inertial>
     <visual>
-      <origin xyz="0 0 ${-base_height}" rpy="0 0 ${M_PI / 2}"/>
-      <geometry><mesh filename="${mesh_dir}/limo_base_lite.dae"/></geometry>
+      <geometry><box size="0.4 0.3 0.08"/></geometry>
+      <material name="chassis_mat"><color rgba="0.15 0.15 0.2 1.0"/></material>
     </visual>
-    <!-- Box sits flush with the body's top surface so it never touches the pendulum -->
     <collision>
-      <origin xyz="0 0 ${body_top_height - base_height - 0.04}"/>
-      <geometry><box size="${base_x_size} ${base_y_size} 0.08"/></geometry>
+      <geometry><box size="0.38 0.28 0.08"/></geometry>
     </collision>
   </link>
 
-  <!-- Mecanum wheel. Real mecanum rollers are approximated with anisotropic friction:
-       full grip (mu) along fdir1, zero grip (mu2) perpendicular to it. fdir1 is
-       expressed in base_footprint (the root link) so it does not spin with the wheel. -->
-  <xacro:macro name="mecanum_wheel" params="prefix x_reflect y_reflect fdir">
-    <link name="${prefix}_wheel_link">
+  <!-- Mecanum Wheel Macro -->
+  <xacro:macro name="mecanum_wheel" params="prefix x_reflect y_reflect">
+    <link name="${prefix}_wheel">
       <inertial>
-        <origin xyz="0 ${wheel_length / 2} 0"/>
-        <mass value="${wheel_mass}"/>
-        <inertia ixx="${wheel_mass * (3 * wheel_radius**2 + wheel_length**2) / 12}" ixy="0" ixz="0"
-                 iyy="${wheel_mass * wheel_radius**2 / 2}" iyz="0"
-                 izz="${wheel_mass * (3 * wheel_radius**2 + wheel_length**2) / 12}"/>
+        <mass value="0.3"/>
+        <inertia ixx="0.0005" ixy="0" ixz="0" iyy="0.0005" iyz="0" izz="0.0005"/>
       </inertial>
       <visual>
-        <geometry><mesh filename="${mesh_dir}/limo_wheel_lite.dae"/></geometry>
+        <geometry><cylinder radius="0.05" length="0.04"/></geometry>
+        <material name="wheel_mat"><color rgba="0.8 0.4 0.1 1.0"/></material>
       </visual>
       <collision>
-        <origin xyz="0 ${wheel_length / 2} 0" rpy="${M_PI / 2} 0 0"/>
-        <geometry><cylinder radius="${wheel_radius}" length="${wheel_length}"/></geometry>
+        <geometry><cylinder radius="0.05" length="0.04"/></geometry>
       </collision>
     </link>
 
-    <!-- Right wheels are flipped so the mesh faces outward; the axis flips with
-         them, so positive joint velocity always drives the robot forward -->
     <joint name="${prefix}_wheel_joint" type="continuous">
       <parent link="base_link"/>
-      <child link="${prefix}_wheel_link"/>
-      <origin xyz="${x_reflect * wheelbase / 2} ${y_reflect * track / 2} ${wheel_vertical_offset}"
-              rpy="${(1 - y_reflect) / 2 * M_PI} 0 0"/>
-      <axis xyz="0 ${y_reflect} 0"/>
+      <child link="${prefix}_wheel"/>
+      <origin xyz="${x_reflect * wheel_xoff} ${y_reflect * wheel_yoff} 0" rpy="-1.5708 0 0"/>
+      <axis xyz="0 0 1"/>
     </joint>
-
-    <gazebo reference="${prefix}_wheel_link">
-      <collision>
-        <surface>
-          <friction>
-            <ode>
-              <mu>1.0</mu>
-              <mu2>0.0</mu2>
-              <fdir1 gz:expressed_in="base_footprint">${fdir}</fdir1>
-            </ode>
-          </friction>
-        </surface>
-      </collision>
-    </gazebo>
   </xacro:macro>
 
-  <xacro:mecanum_wheel prefix="front_left" x_reflect="1" y_reflect="1" fdir="1 -1 0"/>
-  <xacro:mecanum_wheel prefix="front_right" x_reflect="1" y_reflect="-1" fdir="1 1 0"/>
-  <xacro:mecanum_wheel prefix="rear_left" x_reflect="-1" y_reflect="1" fdir="1 1 0"/>
-  <xacro:mecanum_wheel prefix="rear_right" x_reflect="-1" y_reflect="-1" fdir="1 -1 0"/>
+  <xacro:mecanum_wheel prefix="front_left" x_reflect="1" y_reflect="1"/>
+  <xacro:mecanum_wheel prefix="front_right" x_reflect="1" y_reflect="-1"/>
+  <xacro:mecanum_wheel prefix="rear_left" x_reflect="-1" y_reflect="1"/>
+  <xacro:mecanum_wheel prefix="rear_right" x_reflect="-1" y_reflect="-1"/>
 
-  <!-- Platform: origin at the centre of the plate's top surface -->
-  <xacro:property name="post_length" value="${platform_top_height - platform_thickness - post_bottom_height}"/>
-  <xacro:macro name="platform_post" params="x y">
-    <visual>
-      <origin xyz="${x} ${y} ${-platform_thickness - post_length / 2}"/>
-      <geometry><cylinder radius="${post_radius}" length="${post_length}"/></geometry>
-      <material name="post_mat"><color rgba="0.7 0.7 0.72 1.0"/></material>
-    </visual>
-  </xacro:macro>
-
-  <link name="platform_link">
-    <inertial>
-      <origin xyz="0 0 ${-platform_thickness / 2}"/>
-      <mass value="${platform_mass}"/>
-      <inertia ixx="${platform_mass * platform_y_size**2 / 12}" ixy="0" ixz="0"
-               iyy="${platform_mass * platform_x_size**2 / 12}" iyz="0"
-               izz="${platform_mass * (platform_x_size**2 + platform_y_size**2) / 12}"/>
-    </inertial>
-    <visual>
-      <origin xyz="0 0 ${-platform_thickness / 2}"/>
-      <geometry><box size="${platform_x_size} ${platform_y_size} ${platform_thickness}"/></geometry>
-      <material name="platform_mat"><color rgba="0.95 0.75 0.1 1.0"/></material>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${-platform_thickness / 2}"/>
-      <geometry><box size="${platform_x_size} ${platform_y_size} ${platform_thickness}"/></geometry>
-    </collision>
-    <xacro:platform_post x="${post_x}" y="${post_y}"/>
-    <xacro:platform_post x="${post_x}" y="${-post_y}"/>
-    <xacro:platform_post x="${-post_x}" y="${post_y}"/>
-    <xacro:platform_post x="${-post_x}" y="${-post_y}"/>
-  </link>
-
-  <joint name="platform_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="platform_link"/>
-    <origin xyz="0 0 ${platform_top_height - base_height}"/>
-  </joint>
-
-  <!-- Pendulum mount: a small puck on the platform; the pivot is on top of it -->
-  <link name="pendulum_mount">
-    <inertial>
-      <mass value="0.05"/>
-      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
-    </inertial>
-    <visual>
-      <origin xyz="0 0 ${-mount_thickness / 2}"/>
-      <geometry><cylinder radius="0.02" length="${mount_thickness}"/></geometry>
-      <material name="mount_mat"><color rgba="0.2 0.2 0.2 1.0"/></material>
-    </visual>
-  </link>
-
-  <joint name="pendulum_mount_joint" type="fixed">
-    <parent link="platform_link"/>
-    <child link="pendulum_mount"/>
-    <origin xyz="0 0 ${mount_thickness}"/>
-  </joint>
-
-  <!-- Pitch Joint: positive angle tips the pendulum toward +X -->
+  <!-- Pitch Joint -->
   <joint name="pendulum_pitch_joint" type="revolute">
-    <parent link="pendulum_mount"/>
+    <parent link="base_link"/>
     <child link="dummy_pitch_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <origin xyz="0 0 0.04" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-1.57" upper="1.57" effort="10.0" velocity="10.0"/>
     <dynamics damping="0.0001" friction="0.0"/>
@@ -198,7 +66,7 @@
     </inertial>
   </link>
 
-  <!-- Roll Joint: positive angle tips the pendulum toward -Y -->
+  <!-- Roll Joint & Pendulum -->
   <joint name="pendulum_roll_joint" type="revolute">
     <parent link="dummy_pitch_link"/>
     <child link="pendulum_link"/>
@@ -208,68 +76,42 @@
     <dynamics damping="0.0001" friction="0.0"/>
   </joint>
 
-  <!-- Rod + ball combined into one rigid link; inertia is about the combined COM -->
-  <xacro:property name="pend_mass" value="${rod_mass + bob_mass}"/>
-  <xacro:property name="pend_com" value="${(rod_mass * rod_length / 2 + bob_mass * rod_length) / pend_mass}"/>
-  <xacro:property name="pend_ixx" value="${rod_mass * rod_length**2 / 3 + bob_mass * rod_length**2
-                                          + 0.4 * bob_mass * bob_radius**2 - pend_mass * pend_com**2}"/>
   <link name="pendulum_link">
     <inertial>
-      <origin xyz="0 0 ${pend_com}"/>
-      <mass value="${pend_mass}"/>
-      <inertia ixx="${pend_ixx}" ixy="0" ixz="0" iyy="${pend_ixx}" iyz="0"
-               izz="${rod_mass * rod_radius**2 / 2 + 0.4 * bob_mass * bob_radius**2}"/>
+      <origin xyz="0 0 0.2" rpy="0 0 0"/>
+      <mass value="0.15"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0001"/>
     </inertial>
     <visual>
-      <origin xyz="0 0 ${rod_length / 2}"/>
-      <geometry><cylinder radius="${rod_radius}" length="${rod_length}"/></geometry>
-      <material name="rod_mat"><color rgba="0.9 0.1 0.1 1.0"/></material>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${rod_length}"/>
-      <geometry><sphere radius="${bob_radius}"/></geometry>
-      <material name="bob_mat"><color rgba="0.1 0.3 0.9 1.0"/></material>
+      <origin xyz="0 0 0.2" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.008" length="0.4"/></geometry>
+      <material name="pendulum_mat"><color rgba="0.9 0.1 0.1 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="0 0 ${rod_length / 2}"/>
-      <geometry><cylinder radius="${rod_radius}" length="${rod_length}"/></geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0 ${rod_length}"/>
-      <geometry><sphere radius="${bob_radius}"/></geometry>
+      <origin xyz="0 0 0.2" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.008" length="0.4"/></geometry>
     </collision>
   </link>
 
-  <!-- Gazebo Plugins -->
+  <!-- Gazebo Mecanum Drive Plugin -->
   <gazebo>
     <plugin filename="gz-sim-mecanum-drive-system" name="gz::sim::systems::MecanumDrive">
       <front_left_joint>front_left_wheel_joint</front_left_joint>
       <front_right_joint>front_right_wheel_joint</front_right_joint>
       <back_left_joint>rear_left_wheel_joint</back_left_joint>
       <back_right_joint>rear_right_wheel_joint</back_right_joint>
-      <wheel_separation>${track + wheel_length}</wheel_separation>
-      <wheel_base>${wheelbase}</wheel_base>
-      <wheel_radius>${wheel_radius}</wheel_radius>
-      <topic>/cmd_vel</topic>
-      <odom_topic>/odom</odom_topic>
-      <tf_topic>/tf</tf_topic>
+      <wheel_separation>0.36</wheel_separation>
+      <wheel_base>0.3</wheel_base>
+      <wheel_radius>0.05</wheel_radius>
+      <topic>cmd_vel</topic>
+      <odom_topic>odom</odom_topic>
+      <tf_topic>tf</tf_topic>
       <frame_id>odom</frame_id>
-      <child_frame_id>base_footprint</child_frame_id>
+      <child_frame_id>base_link</child_frame_id>
     </plugin>
 
     <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
-      <topic>/joint_states</topic>
-    </plugin>
-
-    <!-- True pose/velocity of the robot (the mecanum odometry above is computed
-         from wheel speeds and cannot see wheel slip) -->
-    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
-      <odom_topic>/ground_truth/odom</odom_topic>
-      <odom_frame>world</odom_frame>
-      <robot_base_frame>base_footprint</robot_base_frame>
-      <odom_publish_frequency>100</odom_publish_frequency>
-      <dimensions>2</dimensions>
-      <tf_topic>/ground_truth/tf</tf_topic>
+      <topic>joint_states</topic>
     </plugin>
   </gazebo>
-</robot>
+</robot>ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 1.5, z: 0.0}}" --once
