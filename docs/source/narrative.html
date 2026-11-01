@@ -1,0 +1,486 @@
+<div class="cover">
+  <h1>Omni Pendulum Robot</h1>
+  <div class="sub">A 2-DOF inverted pendulum balanced by a mecanum-wheeled AgileX LIMO<br>
+  in Gazebo Harmonic with ROS 2 Jazzy on Ubuntu 24.04</div>
+  <div class="meta">Project guide &middot; step-by-step history, design decisions, theory and a
+  line-by-line walkthrough of the code<br>Workspace: <code>~/omni_pendulum_ws</code> &middot;
+  Package: <code>omni_pendulum_sim</code></div>
+</div>
+
+<h1 id="toc">Contents</h1>
+<div class="toc"><ol>
+  <li><a href="#p1">What was built</a> &mdash; behaviour, architecture, topics, files</li>
+  <li><a href="#p2">Step-by-step history</a> &mdash; every stage, the problem found, what was changed and why</li>
+  <li><a href="#p3">What happens behind the scenes</a> &mdash; ROS 2, Gazebo, the bridge, time, physics</li>
+  <li><a href="#p4">Control theory</a> &mdash; the pendulum model, LQR, the cascade, the limits, measured results</li>
+  <li><a href="#p5">Running, tuning and reference</a> &mdash; commands, parameters, troubleshooting, supporting files</li>
+  <li><a href="#code">Line-by-line code walkthrough</a> (6 files)<ol><!--TOC_FILES--></ol></li>
+</ol></div>
+
+<!-- ============================================================ -->
+<h1 id="p1">Part 1 &mdash; What was built</h1>
+
+<h2>1.1 The finished behaviour</h2>
+<p>When you run <code>ros2 launch omni_pendulum_sim sim.launch.py</code>:</p>
+<ol>
+  <li>Gazebo opens with an AgileX LIMO robot (mecanum wheels) carrying a yellow platform. On the platform a
+  0.5 m red rod with a blue ball on top is mounted on a free two-axis hinge, so it can tip in any direction.</li>
+  <li>About 4 s after start a tiny 0.1 N nudge starts the pole falling. The robot does nothing while gravity
+  tips it, so you can see it fall freely.</li>
+  <li>When the pole reaches 10&deg; the controller engages: the robot drives in the direction of the fall to get
+  back underneath the pole and stands it up again.</li>
+  <li>Every 4&ndash;8 s a random &ldquo;human finger&rdquo; nudge (0.3&ndash;1.0 N) hits the pole in a random direction
+  and the robot recovers. You can add your own nudges with the arrow keys (in the Gazebo window or in a
+  terminal running <code>keyboard_nudge</code>) and change their strength with <code>+</code>/<code>-</code>.</li>
+  <li>After a nudge the robot brakes gently (the pole never leans more than about 5&deg; the other way), then
+  drifts back to its start point at no more than 0.3 m/s. Its speed never exceeds 2 m/s.</li>
+</ol>
+
+<h2>1.2 Architecture</h2>
+<p>Two separate systems work together. <b>Gazebo Harmonic</b> simulates the physics (gravity, contacts,
+friction, the robot and the pole). <b>ROS 2 Jazzy</b> runs the robot software (the controller and the
+disturbance generator). They use different communication systems (Gazebo Transport and ROS 2 DDS), so
+<b>ros_gz_bridge</b> translates messages between them.</p>
+
+<svg width="680" height="390" viewBox="0 0 680 390" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="11">
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#20507f"/></marker></defs>
+  <rect x="10" y="10" width="230" height="370" rx="8" fill="#eef3f8" stroke="#20507f"/>
+  <text x="125" y="32" text-anchor="middle" font-weight="bold" font-size="12" fill="#0b3d6b">Gazebo Harmonic (gz sim)</text>
+  <text x="125" y="48" text-anchor="middle" fill="#445">physics: DART, 1 ms step</text>
+  <g fill="#fff" stroke="#8aa4bf">
+    <rect x="25" y="62" width="200" height="40" rx="5"/><rect x="25" y="112" width="200" height="40" rx="5"/>
+    <rect x="25" y="162" width="200" height="40" rx="5"/><rect x="25" y="212" width="200" height="40" rx="5"/>
+    <rect x="25" y="262" width="200" height="40" rx="5"/><rect x="25" y="312" width="200" height="54" rx="5"/>
+  </g>
+  <g text-anchor="middle"><text x="125" y="80">MecanumDrive</text><text x="125" y="94" fill="#556" font-size="9.5">/cmd_vel &#8594; 4 wheel speeds</text>
+  <text x="125" y="130">JointStatePublisher</text><text x="125" y="144" fill="#556" font-size="9.5">pendulum + wheel angles</text>
+  <text x="125" y="180">ApplyLinkWrench</text><text x="125" y="194" fill="#556" font-size="9.5">pushes the pendulum link</text>
+  <text x="125" y="230">OdometryPublisher</text><text x="125" y="244" fill="#556" font-size="9.5">ground-truth pose/velocity</text>
+  <text x="125" y="280">Key Publisher (GUI)</text><text x="125" y="294" fill="#556" font-size="9.5">keys pressed in the window</text>
+  <text x="125" y="332">World clock</text><text x="125" y="346" fill="#556" font-size="9.5">simulation time</text></g>
+  <rect x="275" y="120" width="130" height="150" rx="8" fill="#fff7e0" stroke="#c08a00"/>
+  <text x="340" y="185" text-anchor="middle" font-weight="bold">ros_gz_bridge</text>
+  <text x="340" y="202" text-anchor="middle" fill="#556" font-size="9.5">parameter_bridge</text>
+  <text x="340" y="217" text-anchor="middle" fill="#556" font-size="9.5">translates messages</text>
+  <rect x="440" y="10" width="230" height="370" rx="8" fill="#e9f4ec" stroke="#2e8b57"/>
+  <text x="555" y="32" text-anchor="middle" font-weight="bold" font-size="12" fill="#1f5f3a">ROS 2 Jazzy nodes</text>
+  <g fill="#fff" stroke="#8fbf9f">
+    <rect x="455" y="50" width="200" height="54" rx="5"/><rect x="455" y="118" width="200" height="54" rx="5"/>
+    <rect x="455" y="186" width="200" height="54" rx="5"/><rect x="455" y="254" width="200" height="54" rx="5"/>
+    <rect x="455" y="322" width="200" height="44" rx="5"/></g>
+  <g text-anchor="middle"><text x="555" y="70" font-weight="bold">balance_controller</text><text x="555" y="85" fill="#556" font-size="9.5">in: /joint_states</text><text x="555" y="97" fill="#556" font-size="9.5">out: /cmd_vel</text>
+  <text x="555" y="138" font-weight="bold">disturbance</text><text x="555" y="153" fill="#556" font-size="9.5">in: /keyboard/keypress, /nudge</text><text x="555" y="165" fill="#556" font-size="9.5">out: /world/&#8230;/wrench/persistent</text>
+  <text x="555" y="206" font-weight="bold">keyboard_nudge (optional)</text><text x="555" y="221" fill="#556" font-size="9.5">terminal arrow keys</text><text x="555" y="233" fill="#556" font-size="9.5">out: /keyboard/keypress</text>
+  <text x="555" y="274" font-weight="bold">robot_state_publisher</text><text x="555" y="289" fill="#556" font-size="9.5">URDF + joint states &#8594; TF</text><text x="555" y="301" fill="#556" font-size="9.5">publishes robot_description</text>
+  <text x="555" y="342" font-weight="bold">ros_gz_sim create</text><text x="555" y="356" fill="#556" font-size="9.5">spawns the robot once</text></g>
+  <g stroke="#20507f" stroke-width="1.4" fill="none" marker-end="url(#a)">
+    <path d="M225,132 L275,160"/><path d="M405,160 L455,78"/>
+    <path d="M455,92 L405,185"/><path d="M275,185 L225,82"/>
+    <path d="M455,148 L405,210"/><path d="M275,210 L225,182"/>
+    <path d="M225,282 L275,240"/><path d="M405,240 L455,160"/>
+    <path d="M455,220 L405,250"/>
+  </g>
+</svg>
+
+<h2>1.3 Topics</h2>
+<table>
+<tr><th>Topic</th><th>Type</th><th>From &#8594; To</th><th>Purpose</th></tr>
+<tr><td><code>/<wbr>joint_<wbr>states</code></td><td>sensor_msgs/JointState</td><td>Gazebo &#8594; controller, robot_state_publisher</td><td>Pendulum pitch/roll angle and rate (the controller's only sensor)</td></tr>
+<tr><td><code>/<wbr>cmd_<wbr>vel</code></td><td>geometry_msgs/Twist</td><td>controller &#8594; Gazebo MecanumDrive</td><td>Base velocity command (x forward, y left)</td></tr>
+<tr><td><code>/<wbr>world/<wbr>balance_<wbr>world/<wbr>wrench/<wbr>persistent</code></td><td>ros_gz_interfaces/EntityWrench</td><td>disturbance &#8594; Gazebo ApplyLinkWrench</td><td>Nudge torque on the pendulum (sent as changes)</td></tr>
+<tr><td><code>/<wbr>world/<wbr>balance_<wbr>world/<wbr>wrench/<wbr>clear</code></td><td>ros_gz_interfaces/Entity</td><td>disturbance &#8594; Gazebo</td><td>Remove leftover wrenches at start-up</td></tr>
+<tr><td><code>/<wbr>keyboard/<wbr>keypress</code></td><td>std_msgs/Int32</td><td>Gazebo Key Publisher or keyboard_nudge &#8594; disturbance</td><td>Arrow / + / - key codes (Qt codes)</td></tr>
+<tr><td><code>/<wbr>nudge</code></td><td>geometry_msgs/Vector3</td><td>you (ros2 topic pub) &#8594; disturbance</td><td>Manual push force in newtons</td></tr>
+<tr><td><code>/<wbr>cmd_<wbr>vel_<wbr>ref</code></td><td>geometry_msgs/Twist</td><td>optional teleop &#8594; controller</td><td>Desired travel velocity while balancing</td></tr>
+<tr><td><code>/<wbr>odom</code></td><td>nav_msgs/Odometry</td><td>Gazebo MecanumDrive &#8594; ROS</td><td>Wheel odometry (cannot see slip)</td></tr>
+<tr><td><code>/<wbr>ground_<wbr>truth/<wbr>odom</code></td><td>nav_msgs/Odometry</td><td>Gazebo OdometryPublisher &#8594; ROS</td><td>True pose/velocity, used to measure slip</td></tr>
+<tr><td><code>/<wbr>clock</code></td><td>rosgraph_msgs/Clock</td><td>Gazebo &#8594; all nodes</td><td>Simulation time</td></tr>
+</table>
+
+<h2>1.4 Files in the package</h2>
+<table>
+<tr><th>File</th><th>Role</th></tr>
+<tr><td><code>omni_<wbr>pendulum_<wbr>sim/<wbr>balance_<wbr>controller.py</code></td><td>Balancing controller node (LQR cascade with limits)</td></tr>
+<tr><td><code>omni_<wbr>pendulum_<wbr>sim/<wbr>disturbance.py</code></td><td>Human-nudge simulator node (random, keyboard, manual)</td></tr>
+<tr><td><code>omni_<wbr>pendulum_<wbr>sim/<wbr>keyboard_<wbr>nudge.py</code></td><td>Terminal arrow-key input node</td></tr>
+<tr><td><code>launch/<wbr>sim.launch.py</code></td><td>Starts the whole simulation</td></tr>
+<tr><td><code>urdf/<wbr>robot.urdf.xacro</code></td><td>Robot model and Gazebo plugins</td></tr>
+<tr><td><code>worlds/<wbr>balance_<wbr>world.sdf</code></td><td>World: ground, light, physics, ApplyLinkWrench system</td></tr>
+<tr><td><code>config/<wbr>gui.config</code></td><td>Gazebo window layout + Key Publisher + closer camera</td></tr>
+<tr><td><code>meshes/<wbr>limo/<wbr>*_<wbr>lite.dae</code></td><td>Simplified LIMO body and wheel meshes (installed); originals kept for reference</td></tr>
+<tr><td><code>setup.py</code>, <code>setup.cfg</code>, <code>package.xml</code>, <code>resource/</code></td><td>ROS 2 Python package build and metadata files</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h1 id="p2">Part 2 &mdash; Step-by-step history</h1>
+<p>The project was built in ten stages. Each stage started from something you saw in the simulation (or a
+request), was diagnosed with measurements, and was fixed. This part records the reasoning, including the
+mistakes found along the way, because they explain why the code looks the way it does.</p>
+
+<div class="step"><h3><span class="tag">Step 1</span>Starting point: reviewing the first draft</h3>
+<p><b>Situation.</b> The package <code>omni_pendulum_sim</code> already existed in <code>~/omni_pendulum_ws</code>
+with a first draft of the controller, URDF, launch file and setup.py (the files were not empty, as first
+thought). The launch file was named <code>sim.launch.py</code>, which is the standard ROS 2 naming.</p>
+<p><b>Problems found in the draft:</b></p>
+<ul>
+<li>The controller mapped tilt directly to velocity with a PD law (<code>v = Kp&middot;&theta; + Kd&middot;&theta;'</code>). Part 4.2
+shows mathematically that this can never balance an inverted pendulum.</li>
+<li>It measured time with the wall clock while the data came from simulation time, so its derivative was wrong.</li>
+<li>The wheels were plain cylinders. Gazebo's MecanumDrive plugin computes correct wheel speeds, but with
+ordinary friction the robot cannot slide sideways, so strafing (needed for roll balance) was impossible.</li>
+<li>package.xml had no runtime dependencies, and Gazebo topics were relative (could get model prefixes).</li>
+</ul>
+<p><b>What was done.</b> Anisotropic &ldquo;mecanum&rdquo; friction was added to every wheel, topics were made absolute,
+dependencies were declared, all nodes were switched to simulation time, and the controller was rewritten:
+it now computes a desired <i>acceleration</i> from LQR state feedback and integrates it into a velocity
+command. Gains were computed with <code>scipy</code> from the pendulum's real mass and length.</p>
+<p><b>Result.</b> In a headless test the plain robot balanced while driving forward, sideways and diagonally
+(max tilt 0.11 rad).</p></div>
+
+<div class="step"><h3><span class="tag">Step 2</span>Replacing the plain robot with the AgileX LIMO</h3>
+<p><b>Request.</b> Use the AgileX LIMO from GitHub, and make the pole actually fall (it stayed upright because
+nothing disturbed it).</p>
+<p><b>Findings.</b> AgileX's <code>limo_ros2</code> repository only has diff-drive and Ackermann models, written
+for the old Gazebo Classic (plugins such as <code>libgazebo_ros_diff_drive.so</code> do not exist in Gazebo
+Harmonic). There is no mecanum model.</p>
+<p><b>What was done.</b></p>
+<ul>
+<li>The LIMO meshes and dimensions (wheelbase 0.2 m, track 0.13 m, wheel radius 0.045 m, mass 2.16 kg) were
+copied into the package; the mecanum behaviour was rebuilt for Gazebo Harmonic.</li>
+<li>The STL showed the meshes are in millimetres, the DAE in metres; the DAE was used.</li>
+<li>When URDF is converted to SDF, links joined by fixed joints are merged (&ldquo;lumped&rdquo;) into the root link,
+so <code>base_link</code> disappears into <code>base_footprint</code>. The wheel friction direction was therefore
+expressed in <code>base_footprint</code>.</li>
+<li>A custom world (<code>balance_world.sdf</code>) was created to load Gazebo's ApplyLinkWrench system so a
+node can push the pendulum, and a disturbance node was added.</li>
+<li>The pendulum got a ball on top (rod 0.5 m/0.1 kg, ball 0.1 kg), and the controller gained a position
+term (4-state LQR) so the robot returns home instead of drifting.</li>
+</ul>
+<p><b>Verification.</b> A test pushed the pole at 0&deg;, 90&deg; and &minus;135&deg; and logged the direction the robot
+drove: 2&deg;, 94&deg; and &minus;132&deg;, confirming it drives toward the fall to get back under the pole.</p></div>
+
+<div class="step"><h3><span class="tag">Step 3</span>&ldquo;The robot is missing in the Gazebo tree&rdquo;</h3>
+<p><b>Diagnosis.</b> A Gazebo server from an earlier run was still running in the background with no GUI or
+launch attached. The launch file started the Gazebo <i>server</i> and <i>GUI</i> as two processes; the new GUI
+connected to the first server it found, which was the wrong one.</p>
+<p><b>Fix.</b> Gazebo now runs as a single process containing both server and GUI (<code>gz sim -r world</code>),
+so the window always shows its own simulation; <code>gui:=false</code> runs server only. Lesson recorded in the
+guide: stop the simulation with Ctrl+C, and use <code>pkill -f "gz sim"</code> to clear leftovers.</p>
+<div class="note">During this step one of the test runs opened a second Gazebo window while yours was running,
+which caused &ldquo;Moved backwards in time&rdquo; warnings. Afterwards all tests used an isolated
+<code>GZ_PARTITION</code> and <code>ROS_DOMAIN_ID</code> so they can never interfere with your simulation.</div></div>
+
+<div class="step"><h3><span class="tag">Step 4</span>&ldquo;The pendulum is floating mid-air&rdquo;</h3>
+<p><b>Diagnosis.</b> The pole's pivot had been placed from the LIMO's collision box, not from the visual
+mesh. Measuring the mesh vertices showed the LIMO's top is not flat: the centre is a dip at 0.1455 m, a sloped
+cover peaks at 0.2535 m, so a pivot at 0.26 m floated 11 cm above the body.</p>
+<p><b>Fix.</b> The pivot was moved onto the measured surface and the collision box (which in AgileX's file
+stood 5 cm above the real body) was lowered so it could not hit the pole.</p></div>
+
+<div class="step"><h3><span class="tag">Step 5</span>Platform, and the &ldquo;Force Quit / Wait&rdquo; dialog</h3>
+<p><b>Request.</b> Build a platform on the LIMO; Gazebo was freezing (&ldquo;not responding&rdquo;).</p>
+<p><b>Diagnosis.</b> The LIMO body mesh was 1,619 separate parts, each with its own material, 755,790
+triangles (52 MB), and each of the four wheels another 140,290 triangles (11.4 MB). Loading and drawing
+that froze the GUI.</p>
+<p><b>Fix 1 &mdash; mesh simplification.</b> No mesh library was installed, so a small numpy tool was written:
+it merges all parts by colour (only 4 distinct colours exist) and decimates by <i>vertex clustering</i>
+(snap every vertex to a 2 mm grid, merge vertices in the same cell, drop triangles that collapse). Body:
+755,790 &#8594; 41,255 triangles in 4 groups (2.8 MB). Wheel: 140,290 &#8594; 14,499 (1.0 MB). Total installed
+meshes went from 63.6 MB to 3.8 MB.</p>
+<p><b>Fix 2 &mdash; platform.</b> A 26 &times; 17 cm yellow plate on four posts, with its top at 0.266 m (just above
+the cover's peak), with collision, and the pole's puck and pivot on top of it.</p></div>
+
+<div class="step"><h3><span class="tag">Step 6</span>Making the pole fall freely; wind</h3>
+<p><b>Request.</b> The pole looked stiff; it should fall freely and the robot should keep adjusting.</p>
+<p><b>Findings.</b> With the controller off, the pole fell over in under a second, so the joints were free.
+It looked stiff because it never leaned more than 2&ndash;3&deg;. Testing also showed Gazebo <i>adds</i> persistent
+wrenches together instead of replacing them, so the disturbance node was rewritten to send only the
+<i>change</i> in torque.</p>
+<p><b>What was done.</b> An <code>engage_tilt_rad</code> phase (robot waits until the pole has tipped) and a
+continuously varying random wind were added, and the gains were softened.</p>
+<p><b>Problem found.</b> Catching at 8&deg; failed: logs showed the sideways command pinned at the 1.5 m/s
+speed limit while the tilt grew. Engaging at 5&deg; and a 2 m/s limit fixed it.</p></div>
+
+<div class="step"><h3><span class="tag">Step 7</span>Human nudges instead of wind; discovering the traction limit</h3>
+<p><b>Request.</b> In real life the disturbance is a tiny nudge by a human.</p>
+<p><b>What was done.</b> The disturbance became a finger tap: a 0.15 s half-sine force pulse at a random
+height (0.3&ndash;0.5 m) on the rod, applied as the equivalent torque (force &times; height) because
+ApplyLinkWrench acts at the link origin (the pivot). A <code>/nudge</code> topic allows manual pushes.</p>
+<p><b>Problem found.</b> A sweep of nudge strengths showed diagonal pushes failed much earlier than straight
+ones, and stiffer gains made it <i>worse</i>. A ground-truth odometry plugin was added to compare commanded and
+real velocity. Logging a failing diagonal nudge showed the real robot lagging far behind the command
+(2.0 m/s commanded, 1.08 m/s real) and still moving at 1.09 m/s when the controller thought it had almost
+stopped. The controller was asking for 8 m/s<sup>2</sup>, more than the wheels can deliver diagonally, so its
+internal velocity estimate was wrong and it braked too late.</p>
+<p><b>Fix.</b> The acceleration and velocity limits are now applied to the 2D vector (so diagonal moves keep
+their direction) and the acceleration limit was set to what the wheels can deliver. 4, 5, 6 and 8 m/s<sup>2</sup>
+were compared; 6 was best (Part 4.6).</p></div>
+
+<div class="step"><h3><span class="tag">Step 8</span>Proving gravity; arrow-key nudges; larger visible fall</h3>
+<p><b>Request.</b> The pole still felt stiff; show gravity acting on the bob; nudge with the arrow keys.</p>
+<p><b>Measurement.</b> Free fall from 1&deg; to 90&deg; took 0.881 s in simulation against 0.920 s from
+pendulum theory with a fixed pivot (Part 4.7); the small difference is the robot recoiling. Gravity was
+correct, so the &ldquo;stiffness&rdquo; was perception: a 5&deg; catch seen from Gazebo's default camera 6 m away.</p>
+<p><b>What was done.</b></p>
+<ul>
+<li>The engage angle was raised to 10&deg; (15&deg; was tested and cannot be caught).</li>
+<li>A custom GUI layout moves the camera to 1.6 m behind the robot and adds Gazebo's Key Publisher plugin.</li>
+<li><code>keyboard_nudge.py</code> was written for terminal input. Testing through a pseudo-terminal revealed
+that Python's buffered stdin swallowed arrow-key escape sequences; it now reads raw bytes.</li>
+<li>Both inputs publish Qt key codes on <code>/keyboard/keypress</code>, so the disturbance node has a single code path.</li>
+</ul></div>
+
+<div class="step"><h3><span class="tag">Step 9</span>Overshoot after strong nudges; speed limit</h3>
+<p><b>Request.</b> After a strong nudge the robot moved so fast that the pole leaned the opposite way and fell.
+The speed should be just enough, with an upper limit.</p>
+<p><b>Diagnosis.</b> Measured: the opposite lean exceeded the original lean (e.g. 12&deg; opposite after a
+10&deg; push). The cause is the &ldquo;brake and return home&rdquo; part of the controller, which works by tipping the pole
+backwards and had no limit; the hard 2 m/s speed clip also dropped the pole.</p>
+<p><b>Fix.</b> The LQR law was rewritten as an equivalent cascade (Part 4.5) where braking is a requested
+lean angle capped at 3.4&deg;, return speed is capped at 0.3 m/s and 2 m/s remains an absolute limit. The
+opposite lean is now below 5&deg; for every survivable nudge (Part 4.6).</p></div>
+
+<div class="step"><h3><span class="tag">Step 10</span>Day-to-day issues</h3>
+<ul>
+<li><b>&ldquo;Package not found&rdquo;</b> &mdash; the terminal had sourced ROS but not the workspace; every terminal
+needs both <code>source /opt/ros/jazzy/setup.bash</code> and <code>source ~/omni_pendulum_ws/install/setup.bash</code>.</li>
+<li><b>Yellow QML &ldquo;Binding loop&rdquo; warnings</b> at start-up come from Gazebo's own GUI files and are harmless.</li>
+<li><b>When to rebuild.</b> With <code>colcon build --symlink-install</code>, edits to existing Python, launch, URDF,
+world and config files take effect on the next launch; rebuild only after adding new files or programs.</li>
+</ul></div>
+
+<!-- ============================================================ -->
+<h1 id="p3">Part 3 &mdash; What happens behind the scenes</h1>
+
+<h2>3.1 Start-up sequence</h2>
+<ol>
+<li><code>ros2 launch</code> runs <code>generate_launch_description()</code> in sim.launch.py.</li>
+<li><code>xacro</code> expands robot.urdf.xacro into plain URDF text (macros, properties and maths evaluated).</li>
+<li>robot_state_publisher starts and publishes that text on <code>robot_description</code>.</li>
+<li>Gazebo starts with balance_world.sdf and the custom GUI layout. Its world loads the Physics,
+UserCommands, SceneBroadcaster and ApplyLinkWrench systems.</li>
+<li>The bridge starts and creates the ROS&#8596;Gazebo topic pairs.</li>
+<li>The controller and disturbance nodes start and wait for <code>/clock</code> and <code>/joint_states</code>.</li>
+<li>After 2 s, <code>ros_gz_sim create</code> reads <code>robot_description</code>, Gazebo converts the URDF to SDF
+(lumping fixed joints, attaching the <code>&lt;gazebo&gt;</code> plugin blocks) and spawns the model. Its plugins
+(MecanumDrive, JointStatePublisher, OdometryPublisher) start publishing.</li>
+<li>At about 4 s of simulation time the disturbance node sends the release nudge.</li>
+</ol>
+
+<h2>3.2 One control cycle</h2>
+<ol>
+<li>DART advances physics by 1 ms: gravity, contacts, joint motion.</li>
+<li>JointStatePublisher sends the joint angles and rates; the bridge converts <code>gz.msgs.Model</code> to
+<code>sensor_msgs/JointState</code>.</li>
+<li><code>joint_callback</code> runs; if 5 ms of simulation time have passed it computes the control law and
+publishes a <code>Twist</code>.</li>
+<li>The bridge converts it to <code>gz.msgs.Twist</code>; MecanumDrive applies mecanum inverse kinematics
+(each wheel speed = (vx &plusmn; vy &plusmn; (L+W)&omega;)/r) and commands the four wheel joints.</li>
+<li>The wheels' anisotropic friction turns the wheel spin into body motion in any direction.</li>
+</ol>
+
+<h2>3.3 Simulation time</h2>
+<p>Gazebo may run slower or faster than real time. All nodes use <code>use_sim_time: True</code>, so their clock is
+<code>/clock</code> from Gazebo, and the controller computes <code>dt</code> from message timestamps. This keeps the
+control maths consistent with the physics regardless of computer speed.</p>
+
+<h2>3.4 How mecanum motion is simulated</h2>
+<p>A real mecanum wheel has rollers at 45&deg; around its rim: it grips along one diagonal and rolls freely
+along the other. Simulating dozens of rollers is slow and numerically fragile, so each wheel is a cylinder
+with <b>anisotropic friction</b>: <code>mu = 1</code> along the diagonal <code>fdir1</code> and <code>mu2 = 0</code> across it.
+The four diagonals form an X seen from above. Spinning the wheels in different combinations then pushes the
+body forward, sideways, diagonally or rotates it, exactly like real mecanum wheels. The direction is expressed
+in <code>base_footprint</code> so it does not spin with the wheel.</p>
+
+<h2>3.5 How a nudge is applied</h2>
+<p>The ApplyLinkWrench system applies a force/torque at a link's origin. The pendulum link's origin is the
+pivot, and a force at the pivot cannot tip the pole, so the node converts the finger force F at height h into
+the torque it produces about the pivot, &tau; = F&middot;h, about the horizontal axis perpendicular to the push.
+Persistent wrenches stay applied until cleared and Gazebo sums successive ones, so the node keeps track of the
+torque currently applied and sends only the difference every 10 ms. This was verified in a test where sending
+the same wrench twice gave a much larger angular acceleration.</p>
+
+<h2>3.6 Why some tests were isolated</h2>
+<p>Gazebo processes find each other through <code>GZ_PARTITION</code> and ROS nodes through <code>ROS_DOMAIN_ID</code>.
+Running tests with unique values for both meant they could run in parallel and never touched your
+simulation. One test result was invalidated because two test runs accidentally shared a domain; it was
+re-run on an unused one.</p>
+
+<!-- ============================================================ -->
+<h1 id="p4">Part 4 &mdash; Control theory</h1>
+
+<h2>4.1 The pendulum model</h2>
+<p>For one tilt axis, the pole pivots on a base that accelerates horizontally with acceleration <i>a</i>.
+Taking moments about the pivot (J = moment of inertia about the pivot, m = pendulum mass, l = distance from
+pivot to centre of mass, &theta; = tilt from vertical):</p>
+<div class="formula">J &middot; &theta;'' = m g l &middot; sin &theta; &minus; m l &middot; a &middot; cos &theta;</div>
+<p>Gravity tips the pole over (first term); accelerating the base under it pushes it back (second term).
+For small angles sin &theta; &asymp; &theta; and cos &theta; &asymp; 1:</p>
+<div class="formula">&theta;'' = &alpha; &theta; &minus; &beta; a, &nbsp;&nbsp; &alpha; = m g l / J, &nbsp;&nbsp; &beta; = m l / J</div>
+<table>
+<tr><th>Quantity</th><th>Value</th><th>From</th></tr>
+<tr><td>J (about pivot)</td><td>0.0334 kg&middot;m<sup>2</sup></td><td>rod mL<sup>2</sup>/3 + ball mL<sup>2</sup> + 2mr<sup>2</sup>/5</td></tr>
+<tr><td>m l</td><td>0.075 kg&middot;m</td><td>0.1&middot;0.25 + 0.1&middot;0.5</td></tr>
+<tr><td>&alpha;</td><td>22.06 s<sup>-2</sup></td><td>gravity strength</td></tr>
+<tr><td>&beta;</td><td>2.248 m<sup>-1</sup></td><td>control authority</td></tr>
+<tr><td>Fall time constant 1/&radic;&alpha;</td><td>0.213 s</td><td>how fast an uncontrolled tilt grows (&times;e every 0.21 s)</td></tr>
+</table>
+
+<h2>4.2 Why the first draft (PD tilt &#8594; velocity) could not work</h2>
+<p>The base follows velocity commands, so commanding <i>v = K<sub>p</sub>&theta; + K<sub>d</sub>&theta;'</i> means the base
+acceleration is its derivative, <i>a = K<sub>p</sub>&theta;' + K<sub>d</sub>&theta;''</i>. Substituting into the model:</p>
+<div class="formula">(1 + &beta;K<sub>d</sub>) &theta;'' + &beta;K<sub>p</sub> &theta;' &minus; &alpha; &theta; = 0</div>
+<p>The constant term (&minus;&alpha;&theta;) is negative for any gains, which by the Routh criterion always leaves an
+unstable root: the pole falls whatever K<sub>p</sub> and K<sub>d</sub> are. The fix is to command an acceleration that is
+proportional to &theta; (so the constant term becomes &beta;K&theta; &minus; &alpha; &gt; 0) and integrate it into velocity.</p>
+
+<h2>4.3 State feedback with LQR</h2>
+<p>The state per axis is x = [&theta;, &theta;', p, v] (tilt, tilt rate, base position, base velocity) with input a:</p>
+<div class="formula">&theta;'' = &alpha;&theta; &minus; &beta;a, &nbsp;&nbsp; p' = v, &nbsp;&nbsp; v' = a</div>
+<p>LQR (Linear Quadratic Regulator) finds the gains K in a = k<sub>&theta;</sub>&theta; + k<sub>&omega;</sub>&theta;' + k<sub>p</sub>p + k<sub>v</sub>v that
+minimise &int;(x<sup>T</sup>Qx + Ra<sup>2</sup>)dt: a trade-off between keeping the state small (Q) and using little
+acceleration (R). It was solved with <code>scipy.linalg.solve_continuous_are</code>.</p>
+<table>
+<tr><th>Design</th><th>Q</th><th>R</th><th>k<sub>&theta;</sub></th><th>k<sub>&omega;</sub></th><th>k<sub>p</sub></th><th>k<sub>v</sub></th><th>Closed-loop poles</th></tr>
+<tr><td>Stiff (step 2)</td><td>diag(60,1,2,3)</td><td>0.1</td><td>60.0</td><td>12.1</td><td>4.5</td><td>8.7</td><td>&minus;7.98&plusmn;1.74j, &minus;1.6, &minus;0.92</td></tr>
+<tr><td><b>Soft (current)</b></td><td>diag(20,1,0.5,1)</td><td>0.3</td><td><b>33.4</b></td><td><b>7.1</b></td><td><b>1.3</b></td><td><b>3.1</b></td><td>&minus;6.5, &minus;4.49, &minus;0.98&plusmn;0.09j</td></tr>
+</table>
+<p>Note the positive sign of k<sub>p</sub> and k<sub>v</sub>: to move the base back, the controller first moves it the
+<i>other</i> way to tip the pole toward home. This is the non-minimum-phase behaviour of every inverted
+pendulum and the reason braking needs a backward lean. The fastest pole cannot be much slower than
+&radic;&alpha; &asymp; 4.7 s<sup>-1</sup>, which is why the controller cannot be made arbitrarily &ldquo;lazy&rdquo;.</p>
+
+<h2>4.4 Why the 2D problem splits into two 1D problems</h2>
+<p>The pole hangs from two perpendicular hinges (pitch about Y, roll about X). For small angles, pitch is
+driven only by base acceleration along X and roll only by acceleration along Y, and the mecanum base can
+accelerate along X and Y independently. So one identical controller runs per axis. Signs: positive pitch
+tips toward +X; positive roll tips toward &minus;Y, so the Y controller works in negated coordinates.</p>
+
+<h2>4.5 The cascade form and the limits</h2>
+<p>The four-term LQR law can be rewritten exactly as two levels:</p>
+<div class="formula">lean<sub>ref</sub> = &minus;(k<sub>p</sub>&middot;e<sub>p</sub> + k<sub>v</sub>&middot;e<sub>v</sub>) / k<sub>&theta;</sub> &nbsp;&nbsp;&nbsp; a = k<sub>&theta;</sub>(&theta; &minus; lean<sub>ref</sub>) + k<sub>&omega;</sub>&theta;'</div>
+<p>Without limits this is identical to the original law. The benefit is that each part can be limited for a
+physical reason:</p>
+<table>
+<tr><th>Limit</th><th>Value</th><th>Why</th></tr>
+<tr><td>|lean<sub>ref</sub>| &le; max_lean_rad</td><td>0.06 rad (3.4&deg;)</td><td>Braking/returning may never tip the pole far the other way (fixes the overshoot).</td></tr>
+<tr><td>|k<sub>p</sub>e<sub>p</sub>| &le; k<sub>v</sub>&middot;max_return_speed</td><td>0.3 m/s</td><td>The drive back home is gentle however far a nudge carried the robot.</td></tr>
+<tr><td>|a| &le; max_accel (2D)</td><td>6 m/s<sup>2</sup></td><td>Never ask for more than the wheels can deliver, so the commanded velocity stays equal to the real one.</td></tr>
+<tr><td>|v| &le; max_vel (2D)</td><td>2 m/s</td><td>Absolute speed limit; limited value written back to avoid wind-up.</td></tr>
+<tr><td>engage_tilt_rad</td><td>0.17 rad (10&deg;)</td><td>Visible free fall at start; largest catchable angle.</td></tr>
+<tr><td>max_tilt_rad</td><td>0.6 rad (34&deg;)</td><td>Beyond this the pole is lost; stop the robot.</td></tr>
+</table>
+<div class="why"><b>Why integrate acceleration instead of using measured velocity?</b> On a real robot and in
+the simulation, the base's velocity controller follows commands closely as long as the acceleration is
+achievable. Integrating the commanded acceleration gives a smooth, noise-free velocity estimate. The
+traction measurements (4.6) are what made this valid: once the acceleration limit matched the wheels, the
+commanded and real velocities agreed.</div>
+
+<h2>4.6 Measured results</h2>
+<h3>Wheel traction (velocity lag while accelerating to 1 m/s, ground truth)</h3>
+<table><tr><th>Direction</th><th>2 m/s<sup>2</sup></th><th>5 m/s<sup>2</sup></th><th>8 m/s<sup>2</sup></th></tr>
+<tr><td>Forward</td><td>0.06 m/s</td><td>0.12 m/s</td><td>0.31 m/s</td></tr>
+<tr><td>Sideways</td><td>0.03 m/s</td><td>0.08 m/s</td><td>0.25 m/s</td></tr>
+<tr><td>Diagonal</td><td>0.03 m/s</td><td>0.09 m/s</td><td>0.42 m/s</td></tr></table>
+<h3>Acceleration limit vs. strongest survivable nudge (at the top of the pole)</h3>
+<table><tr><th>max_accel</th><th>Straight</th><th>Diagonal</th></tr>
+<tr><td>8 m/s<sup>2</sup> per axis (old)</td><td>1.5 N ok</td><td>1.5 N falls</td></tr>
+<tr><td>4 m/s<sup>2</sup> (2D)</td><td>1.0 N ok, 1.5 N falls</td><td>1.0 N ok</td></tr>
+<tr><td>5 m/s<sup>2</sup> (2D)</td><td>1.5 N ok, 1.75 N falls</td><td>1.5 N ok</td></tr>
+<tr><td><b>6 m/s<sup>2</sup> (2D, chosen)</b></td><td><b>1.75 N ok</b></td><td><b>1.5 N ok</b>, 1.75 N falls</td></tr></table>
+<h3>Overshoot before and after the lean limit</h3>
+<table><tr><th>Nudge</th><th>Opposite lean before</th><th>Opposite lean after</th><th>Peak speed after</th><th>Travel after</th></tr>
+<tr><td>0.8 N</td><td>4.4&deg;</td><td>3.9&ndash;4.4&deg;</td><td>0.56&ndash;0.67 m/s</td><td>0.4&ndash;1.1 m</td></tr>
+<tr><td>1.2 N</td><td>7.0&ndash;7.5&deg;</td><td>4.8&deg;</td><td>1.09&ndash;1.32 m/s</td><td>1.0&ndash;1.2 m</td></tr>
+<tr><td>1.5 N</td><td>9.6&ndash;12.0&deg;</td><td>4.8&deg;</td><td>1.43&ndash;1.73 m/s</td><td>1.7&ndash;1.8 m</td></tr>
+<tr><td>1.75 N straight</td><td>13.0&deg;</td><td>4.8&deg;</td><td>1.66 m/s</td><td>2.2 m</td></tr></table>
+<p>Lean caps of 2.0&deg;, 2.9&deg; and 4.6&deg; were also compared: 2.0&deg; could not brake enough and ran away;
+4.6&deg; allowed 6.4&deg; opposite lean with shorter travel.</p>
+
+<h2>4.7 Gravity check: free fall vs. theory</h2>
+<table><tr><th>From 1&deg; to</th><th>2&deg;</th><th>5&deg;</th><th>10&deg;</th><th>20&deg;</th><th>45&deg;</th><th>90&deg;</th></tr>
+<tr><td>Simulation</td><td>0.107 s</td><td>0.286 s</td><td>0.431 s</td><td>0.578 s</td><td>0.750 s</td><td>0.881 s</td></tr>
+<tr><td>Theory (fixed pivot)</td><td>0.114 s</td><td>0.296 s</td><td>0.442 s</td><td>0.589 s</td><td>0.764 s</td><td>0.920 s</td></tr></table>
+<p>The simulation is 2&ndash;4% faster because the robot base recoils slightly as the pole falls (theory assumes
+an immovable pivot). Gravity and the pendulum's mass properties are therefore modelled correctly.</p>
+
+<h2>4.8 Design decisions and alternatives</h2>
+<table>
+<tr><th>Decision</th><th>Alternative considered</th><th>Reason for the choice</th></tr>
+<tr><td>Velocity commands via MecanumDrive</td><td>Torque control of each wheel</td><td>Matches the real LIMO's interface (it takes /cmd_vel), simpler, and the plugin handles mecanum kinematics.</td></tr>
+<tr><td>Anisotropic friction wheels</td><td>Modelling every roller; or Gazebo's VelocityControl (moves the body directly)</td><td>Rollers are slow and unstable; VelocityControl would ignore wheels and traction entirely, hiding the very limit found in Step 7.</td></tr>
+<tr><td>LQR, written as a cascade</td><td>PID per axis</td><td>LQR handles the coupled 4-state system with gains from the physics; the cascade adds physically meaningful limits without losing that.</td></tr>
+<tr><td>Integrated commanded velocity as the estimate</td><td>Wheel odometry</td><td>Smooth and delay-free; wheel odometry cannot see slip either.</td></tr>
+<tr><td>Torque at the pivot for nudges</td><td>Force with offset</td><td>The ROS EntityWrench message has no force offset; torque = F&middot;h is physically equivalent for tipping the pole.</td></tr>
+<tr><td>Sending wrench changes</td><td>Clear then set each time</td><td>Clear and set travel on different topics and can arrive out of order; deltas are exact.</td></tr>
+<tr><td>Single-process Gazebo</td><td>Separate server and GUI</td><td>A GUI attaches to any server; one process guarantees the right world.</td></tr>
+<tr><td>Simplified meshes</td><td>Using STL or the original DAE</td><td>The original froze the GUI; the STL has no colours.</td></tr>
+<tr><td>Both Gazebo-window and terminal keyboard input</td><td>Only one</td><td>The window needs focus on the 3D view; the terminal works everywhere. One shared topic keeps one code path.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h1 id="p5">Part 5 &mdash; Running, tuning and reference</h1>
+<h2>5.1 Build and run</h2>
+<pre>source /opt/ros/jazzy/setup.bash
+cd ~/omni_pendulum_ws
+colcon build --symlink-install          # only after adding new files/programs
+source install/setup.bash
+ros2 launch omni_pendulum_sim sim.launch.py</pre>
+<p>Launch options: <code>gui:=false</code> (no window), <code>push:=false</code> (no nudges),
+<code>balance:=false</code> (no controller: watch the pole fall).</p>
+<h2>5.2 Nudging</h2>
+<ul>
+<li><b>Gazebo window:</b> click the 3D view, then &uarr;/&darr; forward/back, &larr;/&rarr; left/right, +/- strength (starts at 0.8 N, steps of 0.2 N).</li>
+<li><b>Terminal:</b> <code>ros2 run omni_pendulum_sim keyboard_nudge</code> (same keys, q to quit).</li>
+<li><b>Command:</b> <code>ros2 topic pub --once /nudge geometry_msgs/msg/Vector3 "{x: 0.5, y: 0.0}"</code></li>
+</ul>
+<h2>5.3 Parameters</h2>
+<table>
+<tr><th>Node</th><th>Parameter</th><th>Default</th><th>Effect</th></tr>
+<tr><td rowspan="9">balance_controller</td><td>k_theta, k_omega, k_pos, k_vel</td><td>33.4, 7.1, 1.3, 3.1</td><td>LQR gains</td></tr>
+<tr><td>max_lean_rad</td><td>0.06</td><td>Higher: shorter roll-out, more opposite lean. Keep &ge; 0.05.</td></tr>
+<tr><td>max_return_speed</td><td>0.3 m/s</td><td>Speed of the drive back home</td></tr>
+<tr><td>max_accel</td><td>6.0 m/s<sup>2</sup></td><td>Must match what the wheels can deliver</td></tr>
+<tr><td>max_vel</td><td>2.0 m/s</td><td>Absolute speed limit</td></tr>
+<tr><td>engage_tilt_rad</td><td>0.17</td><td>Free-fall angle before catching (&le; ~0.2)</td></tr>
+<tr><td>max_tilt_rad</td><td>0.6</td><td>Give-up angle</td></tr>
+<tr><td>control_period</td><td>0.005 s</td><td>Control rate (200 Hz)</td></tr>
+<tr><td colspan="3">Override example: <code>ros2 run omni_pendulum_sim balance_controller --ros-args -p use_sim_time:=true -p max_lean_rad:=0.08</code></td></tr>
+<tr><td rowspan="6">disturbance</td><td>auto_nudge</td><td>True</td><td>Random nudges on/off</td></tr>
+<tr><td>min/max_interval</td><td>4 / 8 s</td><td>Time between random nudges</td></tr>
+<tr><td>min/max_force</td><td>0.3 / 1.0 N</td><td>Random nudge strength</td></tr>
+<tr><td>nudge_duration</td><td>0.15 s</td><td>Length of a tap</td></tr>
+<tr><td>min/max_contact_height</td><td>0.3 / 0.5 m</td><td>Where on the rod the tap lands</td></tr>
+<tr><td>key_force, key_force_step</td><td>0.8, 0.2 N</td><td>Arrow-key strength</td></tr>
+</table>
+<h2>5.4 Troubleshooting</h2>
+<table>
+<tr><th>Symptom</th><th>Cause / fix</th></tr>
+<tr><td>Package 'omni_pendulum_sim' not found</td><td><code>source ~/<wbr>omni_<wbr>pendulum_<wbr>ws/<wbr>install/<wbr>setup.bash</code> in that terminal.</td></tr>
+<tr><td>Robot missing / two simulations / &ldquo;Moved backwards in time&rdquo;</td><td>A leftover Gazebo is running: <code>pkill -f "gz sim"</code>, then relaunch.</td></tr>
+<tr><td>Arrow keys do nothing in Gazebo</td><td>Click on the 3D view first, or use keyboard_nudge in a terminal.</td></tr>
+<tr><td>Gazebo &ldquo;not responding&rdquo;</td><td>Wait; if it persists, force Gazebo onto the NVIDIA GPU (laptops with hybrid graphics).</td></tr>
+<tr><td>Pole falls after a very strong push</td><td>Expected above about 1.5&ndash;1.75 N at the top of the pole: the physical limit.</td></tr>
+</table>
+<h2>5.5 Supporting files (not explained line by line)</h2>
+<ul>
+<li><b>worlds/balance_world.sdf</b> &mdash; a 1 ms physics step at real-time factor 1; the Physics,
+UserCommands and SceneBroadcaster systems (standard for any Gazebo world); <b>ApplyLinkWrench</b> (lets the
+disturbance node and the GUI push links); a sun light and a 100 m ground plane.</li>
+<li><b>config/gui.config</b> &mdash; a copy of Gazebo Harmonic's default GUI layout with two changes: the camera
+pose <code>-1.6 0 1.1 0 0.39 0</code> (1.6 m behind, 1.1 m up, looking along +X so screen-up is robot-forward)
+and the <b>KeyPublisher</b> plugin appended.</li>
+<li><b>package.xml</b> &mdash; package metadata and runtime dependencies (rclpy, message packages, launch,
+xacro, robot_state_publisher, ros_gz_sim, ros_gz_bridge, ros_gz_interfaces).</li>
+<li><b>meshes/limo/</b> &mdash; the original AgileX meshes and the simplified <code>_lite</code> versions. The AgileX
+repository declares no licence; check with AgileX before publishing these files.</li>
+</ul>
+<h2>5.6 Moving to a real LIMO</h2>
+<ul>
+<li>Measure the real robot's achievable acceleration and set <code>max_accel</code> to it; the controller relies on
+the base following its commands.</li>
+<li>Add a pendulum angle sensor (two encoders at the hinges or an IMU on the rod) and publish it as
+<code>/joint_states</code> with the same joint names, including angular velocity.</li>
+<li>Re-run the LQR design with the real pole's mass, length and inertia (Part 4.1&ndash;4.3), and expect sensor
+noise and latency to reduce the recoverable nudge strength.</li>
+</ul>
