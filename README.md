@@ -14,10 +14,12 @@ nudge the pole with the arrow keys and watch the robot recover.
 - **LQR controller with physical limits**: gains come from the pendulum's real mass and
   inertia. Separate limits on braking lean (3.4°), return speed (0.3 m/s), acceleration
   (6 m/s²) and top speed (2 m/s) stop the robot from overshooting after a strong push.
-- **Visible free fall**: at start-up the pole is released and falls freely to 10° before the
-  robot catches it.
-- **Human-like nudges**: random finger-tap pushes (0.3–1.0 N), arrow keys in the Gazebo window
-  or in a terminal, or exact pushes on a topic.
+- **Continuous falling and catching**: gravity keeps tipping the pole. At start-up it falls
+  freely to 8°; after that the robot lets go once the pole is back under control, catches it
+  again at about 6°, and repeats. A nudge triggers an immediate catch.
+- **Human-like manual nudges**: finger-tap pushes from the arrow keys in the Gazebo window or
+  in a terminal, or exact pushes on a topic. There are no automatic nudges: one tiny start-up
+  nudge starts the fall, and gravity keeps the cycle going.
 - **Mecanum wheels in Gazebo Harmonic**: anisotropic wheel friction combined with Gazebo's
   MecanumDrive system.
 - **Ground-truth odometry** for checking wheel slip.
@@ -57,7 +59,7 @@ ros2 launch omni_pendulum_sim sim.launch.py
 | Launch option | Effect |
 |---|---|
 | `gui:=false` | Run Gazebo without a window |
-| `push:=false` | Turn off all nudges |
+| `push:=false` | Turn off the start-up and manual nudges (the pole then stays upright) |
 | `balance:=false` | Turn off the controller and watch the pole fall |
 
 ### Nudging the pole
@@ -82,7 +84,7 @@ ros2 run omni_pendulum_sim keyboard_nudge
 ros2 topic pub --once /nudge geometry_msgs/msg/Vector3 "{x: 0.5, y: 0.0}"
 ```
 
-The robot recovers from nudges up to about 1.5 N at the top of the pole in every direction.
+The robot recovers from nudges up to about 1.2 N at the top of the pole in every direction.
 
 ## How it works
 
@@ -113,8 +115,8 @@ flowchart LR
    `/cmd_vel`.
 3. Gazebo's MecanumDrive turns `/cmd_vel` into four wheel speeds. The wheels' diagonal
    friction lets the robot move in any direction.
-4. `disturbance` pushes the pole through Gazebo's ApplyLinkWrench system. Each push is a short
-   half-sine force pulse at a random height on the rod.
+4. `disturbance` applies the start-up and manual nudges through Gazebo's ApplyLinkWrench
+   system. Each push is a short half-sine force pulse at a random height on the rod.
 
 The controller is an LQR state feedback written as a cascade:
 
@@ -164,9 +166,12 @@ ros2 run omni_pendulum_sim balance_controller --ros-args -p use_sim_time:=true -
 | `max_return_speed` | 0.3 m/s | Speed of the drive back to the start point |
 | `max_accel` | 6.0 m/s² | Must match what the wheels can deliver |
 | `max_vel` | 2.0 m/s | Absolute speed limit |
-| `engage_tilt_rad` | 0.17 | How far the pole falls before the robot reacts |
+| `engage_tilt_rad` | 0.14 | How far the pole falls before the very first catch |
+| `catch_tilt_rad` | 0.1 | Tilt at which the robot catches the pole in each cycle. Larger: bigger swings, less margin. |
+| `catch_rate` | 0.6 rad/s | Catch immediately if the pole moves faster than this (a nudge) |
+| `release_tilt_rad`, `release_rate` | 0.015, 0.1 rad/s | How settled the pole must be before the robot lets go |
 
-Nudge settings (`min_force`, `max_force`, `auto_nudge`, `key_force`, …) are parameters of the
+Nudge settings (`release_force`, `key_force`, `nudge_duration`, …) are parameters of the
 `disturbance` node. All parameters are listed in the project guide.
 
 ## Tests

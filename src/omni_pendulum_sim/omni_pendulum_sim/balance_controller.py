@@ -26,6 +26,11 @@ position term at max_return_speed keeps the drive back home gentle.
 At startup the controller stays idle and lets the pole fall freely until it
 has tipped past engage_tilt_rad, then catches it.
 
+An upright pole held by a good controller barely moves, so balancing runs as a
+repeating cycle: once the pole is back under control the robot lets go (no
+acceleration) and gravity tips the pole again; at catch_tilt_rad the robot
+drives under it and brings it back.
+
 The default gains come from a deliberately soft LQR design (so the pole visibly
 sways while the robot works to keep it up) on the linearised model
   theta_ddot = (m g l / J) * theta - (m l / J) * a
@@ -99,8 +104,15 @@ class OmnidirectionalBalanceController(Node):
         # commands, so asking for more than this makes it lose track and overshoot.
         self.declare_parameter('max_accel', 6.0)
         self.declare_parameter('max_tilt_rad', 0.6)
-        self.declare_parameter('engage_tilt_rad', 0.17)
+        self.declare_parameter('engage_tilt_rad', 0.14)
         self.declare_parameter('control_period', 0.005)
+        # Let-go / catch cycle: catch at this tilt, or sooner if the pole moves faster
+        # than gravity alone would make it (a nudge). Let go again once the pole is
+        # within release_tilt_rad of the requested lean and slower than release_rate
+        self.declare_parameter('catch_tilt_rad', 0.1)
+        self.declare_parameter('catch_rate', 0.6)
+        self.declare_parameter('release_tilt_rad', 0.015)
+        self.declare_parameter('release_rate', 0.1)
 
         gains = [self.get_parameter(n).value for n in ('k_theta', 'k_omega', 'k_pos', 'k_vel')]
         self.x_axis = AxisController(*gains)
@@ -112,12 +124,17 @@ class OmnidirectionalBalanceController(Node):
         self.max_tilt_rad = self.get_parameter('max_tilt_rad').value
         self.engage_tilt_rad = self.get_parameter('engage_tilt_rad').value
         self.control_period = self.get_parameter('control_period').value
+        self.catch_tilt_rad = self.get_parameter('catch_tilt_rad').value
+        self.catch_rate = self.get_parameter('catch_rate').value
+        self.release_tilt_rad = self.get_parameter('release_tilt_rad').value
+        self.release_rate = self.get_parameter('release_rate').value
 
         # Optional user velocity request (e.g. from teleop_twist_keyboard)
         self.vel_ref_x = 0.0
         self.vel_ref_y = 0.0
         self.last_stamp = None
         self.engaged = False
+        self.catching = True
         self.fallen = False
 
         self.create_subscription(JointState, '/joint_states', self.joint_callback, 10)
@@ -180,9 +197,21 @@ class OmnidirectionalBalanceController(Node):
         lean_x = self.x_axis.lean_ref(self.vel_ref_x, self.max_return_speed, dt)
         lean_y = self.y_axis.lean_ref(-self.vel_ref_y, self.max_return_speed, dt)
         lean_x, lean_y = limit_norm(lean_x, lean_y, self.max_lean)
-        ax = self.x_axis.accel(theta_pitch, omega_pitch, lean_x)
-        ay = -self.y_axis.accel(theta_roll, omega_roll, lean_y)
-        ax, ay = limit_norm(ax, ay, self.max_accel)
+
+        # Gravity takes over while letting go; the robot just keeps its velocity
+        rate = math.hypot(omega_pitch, omega_roll)
+        if self.catching:
+            error = math.hypot(theta_pitch - lean_x, theta_roll - lean_y)
+            self.catching = error > self.release_tilt_rad or rate > self.release_rate
+        else:
+            tilt = math.hypot(theta_pitch, theta_roll)
+            self.catching = tilt > self.catch_tilt_rad or rate > self.catch_rate
+
+        ax = ay = 0.0
+        if self.catching:
+            ax = self.x_axis.accel(theta_pitch, omega_pitch, lean_x)
+            ay = -self.y_axis.accel(theta_roll, omega_roll, lean_y)
+            ax, ay = limit_norm(ax, ay, self.max_accel)
         self.x_axis.integrate(ax, dt)
         self.y_axis.integrate(-ay, dt)
 

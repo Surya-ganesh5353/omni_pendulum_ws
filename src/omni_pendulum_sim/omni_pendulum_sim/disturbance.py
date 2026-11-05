@@ -8,8 +8,8 @@ ros_gz_bridge) only takes a wrench at the link origin, which is the pivot, so
 the push is applied as the equivalent torque: force * contact height.
 
 Nudges happen:
-  * once at startup (a very small one) so the pole starts to fall on its own
-  * automatically, at random intervals, with random strength and direction
+  * once at startup (a very small one) so the pole starts to fall on its own;
+    after that gravity keeps the let-go / catch cycle going without any nudges
   * from the arrow keys, either in the Gazebo window (Key Publisher plugin) or
     in a terminal running keyboard_nudge; both publish Qt key codes on
     /keyboard/keypress. Up/Down push along +X/-X (robot forward/back),
@@ -18,7 +18,8 @@ Nudges happen:
       ros2 topic pub --once /nudge geometry_msgs/msg/Vector3 "{x: 0.5, y: 0.0}"
 
 Gazebo adds persistent wrenches together rather than replacing them, so this
-node only ever publishes the *change* in total torque since the last update.
+node only ever publishes the *change* in total torque since the last update,
+and clears the accumulated wrenches shortly after each nudge ends.
 """
 
 import math
@@ -45,13 +46,8 @@ class Disturbance(Node):
 
         self.declare_parameter('world', 'balance_world')
         self.declare_parameter('link', 'omni_pendulum::pendulum_link')
-        self.declare_parameter('auto_nudge', True)
         self.declare_parameter('release_delay', 4.0)
         self.declare_parameter('release_force', 0.1)
-        self.declare_parameter('min_interval', 4.0)
-        self.declare_parameter('max_interval', 8.0)
-        self.declare_parameter('min_force', 0.3)
-        self.declare_parameter('max_force', 1.0)
         self.declare_parameter('nudge_duration', 0.15)
         self.declare_parameter('min_contact_height', 0.3)
         self.declare_parameter('max_contact_height', 0.5)
@@ -60,13 +56,8 @@ class Disturbance(Node):
 
         world = self.get_parameter('world').value
         self.link = self.get_parameter('link').value
-        self.auto_nudge = self.get_parameter('auto_nudge').value
         self.release_delay = self.get_parameter('release_delay').value
         self.release_force = self.get_parameter('release_force').value
-        self.interval = (self.get_parameter('min_interval').value,
-                         self.get_parameter('max_interval').value)
-        self.force_range = (self.get_parameter('min_force').value,
-                            self.get_parameter('max_force').value)
         self.duration = self.get_parameter('nudge_duration').value
         self.height_range = (self.get_parameter('min_contact_height').value,
                              self.get_parameter('max_contact_height').value)
@@ -82,10 +73,10 @@ class Disturbance(Node):
 
         self.start_time = None
         self.released = False
-        self.next_nudge = math.inf
         self.nudge = None           # (start time, peak torque about x, about y)
         self.pending = []           # manual nudges waiting for the next tick
         self.applied = [0.0, 0.0]   # total torque Gazebo currently applies
+        self.clear_time = None      # when to clear wrenches after a nudge
 
         self.create_timer(0.01, self.tick)
 
@@ -134,13 +125,8 @@ class Disturbance(Node):
             if not self.released and t - self.start_time >= self.release_delay:
                 self.released = True
                 self.start_nudge(t, *self.random_force(self.release_force), 'Release nudge')
-                if self.auto_nudge:
-                    self.next_nudge = t + random.uniform(*self.interval)
             elif self.pending:
                 self.start_nudge(t, *self.pending.pop(0), 'Manual nudge')
-            elif t >= self.next_nudge:
-                self.start_nudge(t, *self.random_force(random.uniform(*self.force_range)), 'Nudge')
-                self.next_nudge = t + random.uniform(*self.interval)
 
         target = [0.0, 0.0]
         if self.nudge is not None:
@@ -148,6 +134,7 @@ class Disturbance(Node):
             phase = (t - start) / self.duration
             if phase >= 1.0:
                 self.nudge = None
+                self.clear_time = t + 0.1
             else:
                 shape = math.sin(math.pi * phase)
                 target = [tx * shape, ty * shape]
@@ -160,6 +147,11 @@ class Disturbance(Node):
             msg.wrench.torque.y = delta[1]
             self.wrench_pub.publish(msg)
             self.applied = target
+
+        # Wait for the last update to arrive first; clear and wrench are separate topics
+        if self.nudge is None and self.clear_time is not None and t >= self.clear_time:
+            self.clear_pub.publish(self.entity())
+            self.clear_time = None
 
 
 def main(args=None):

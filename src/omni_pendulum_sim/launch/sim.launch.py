@@ -27,7 +27,7 @@ def generate_launch_description():
     declare_gui = DeclareLaunchArgument(
         'gui', default_value='true', description='Start the Gazebo GUI')
     declare_push = DeclareLaunchArgument(
-        'push', default_value='true', description='Random nudges, like a person tapping it')
+        'push', default_value='true', description='Start-up nudge and manual nudges')
     declare_balance = DeclareLaunchArgument(
         'balance', default_value='true',
         description='Run the balance controller (false = watch the pole fall)')
