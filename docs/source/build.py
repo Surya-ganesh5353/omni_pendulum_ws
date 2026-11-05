@@ -10,24 +10,36 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from expl_python import BALANCE_CONTROLLER, DISTURBANCE, KEYBOARD_NUDGE  # noqa: E402
-from expl_other import LAUNCH, SETUP, URDF  # noqa: E402
+from expl_other import LAUNCH, PACKAGE_XML, SETUP, URDF, WORLD  # noqa: E402
 
 PKG, OUT = sys.argv[1], sys.argv[2]
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 FILES = [
     ('balance_controller.py', 'omni_pendulum_sim/balance_controller.py', BALANCE_CONTROLLER,
-     'The brain of the robot: reads the pendulum angles and decides how the base moves.'),
+     'The brain of the robot. It subscribes to the pendulum angles on /joint_states and publishes '
+     'a velocity command on /cmd_vel. Read it in this order: `AxisController` holds the control '
+     'maths for one tilt direction, `limit_norm` applies limits, and `joint_callback` is the '
+     'control loop that runs the free-fall start, the safety cut-off and the let-go / catch cycle.'),
     ('disturbance.py', 'omni_pendulum_sim/disturbance.py', DISTURBANCE,
-     'Simulates a person nudging the pole: automatic random taps, arrow keys and /nudge.'),
+     'Simulation only: it stands in for a person touching the pole. It gives one tiny start-up '
+     'nudge, then turns arrow keys and /nudge messages into short pushes. `tick` runs every 10 ms '
+     'and shapes the push over time. On a real robot this node is not used.'),
     ('keyboard_nudge.py', 'omni_pendulum_sim/keyboard_nudge.py', KEYBOARD_NUDGE,
-     'Optional terminal program that turns arrow-key presses into nudges.'),
+     'An optional terminal program. It reads arrow keys and publishes their key codes on '
+     '/keyboard/keypress, the same topic as the Gazebo window, so disturbance.py handles both.'),
     ('sim.launch.py', 'launch/sim.launch.py', LAUNCH,
-     'Starts everything: Gazebo, the ROS-Gazebo bridge, the robot and the nodes.'),
+     'One command to start everything. It only describes what to run; the launch system then '
+     'starts each process: Gazebo, the bridge, the nodes and, after 2 s, the robot spawner.'),
     ('robot.urdf.xacro', 'urdf/robot.urdf.xacro', URDF,
-     'The robot model: LIMO chassis, mecanum wheels, platform, pendulum and Gazebo plugins.'),
+     'The robot model. It lists links (rigid bodies) and joints (connections), with properties at '
+     'the top and macros for repeated parts. Gazebo-only settings sit inside `<gazebo>` blocks.'),
+    ('balance_world.sdf', 'worlds/balance_world.sdf', WORLD,
+     'The environment the robot is spawned into: physics settings, Gazebo systems, light, ground.'),
     ('setup.py', 'setup.py', SETUP,
-     'Tells colcon how to build and install the package and its programs.'),
+     'Tells colcon what to install and where, and creates the commands that `ros2 run` starts.'),
+    ('package.xml', 'package.xml', PACKAGE_XML,
+     'The package manifest: its identity, and what it needs in order to run.'),
 ]
 
 
@@ -75,7 +87,7 @@ CSS = open(os.path.join(HERE, 'style.css')).read()
 
 toc_files = ''.join(f'<li><a href="#{t}">{t}</a></li>' for t, *_ in FILES)
 body = NARRATIVE.replace('<!--TOC_FILES-->', toc_files)
-body += '<section class="code-section"><h1 id="code">Part 6 &mdash; Line-by-line code walkthrough</h1>'
+body += '<section class="code-section"><h1 id="code">Part 9 &mdash; Line-by-line code walkthrough</h1>'
 body += ('<p>Each source line is shown with its line number. The grey box under a line (or under a '
          'group of lines) explains what it does and why. Blank lines are shown but not explained; '
          'docstrings and closing brackets are explained as a group.</p>')

@@ -51,3 +51,6 @@ h2.file { break-before: page; font-size: 15pt; }
 table { table-layout: auto; }
 td code { overflow-wrap: anywhere; white-space: normal; }
 td:first-child { max-width: 46%; }
+img { display: block; width: 100%; max-width: 165mm; margin: 8px auto 2px; break-inside: avoid; }
+.cap { font-size: 8.8pt; color: #52514e; margin-top: 2px; }
+.code-section h2.file:first-of-type { break-before: auto; }

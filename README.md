@@ -23,7 +23,7 @@ nudge the pole with the arrow keys and watch the robot recover.
 - **Mecanum wheels in Gazebo Harmonic**: anisotropic wheel friction combined with Gazebo's
   MecanumDrive system.
 - **Ground-truth odometry** for checking wheel slip.
-- **Full documentation**: a 58-page [project guide](docs/omni_pendulum_project_guide.pdf)
+- **Full documentation**: a 70-page [project guide](docs/omni_pendulum_project_guide.pdf)
   with the design history, control theory, test results and a line-by-line code walkthrough.
 
 ## Requirements
